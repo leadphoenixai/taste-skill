@@ -37,7 +37,7 @@ Use a single `curl` command that runs the actor and waits for the result:
 curl -s -X POST \
   "https://api.apify.com/v2/acts/faVsWy9VTSNVIhWpR/run-sync-get-dataset-items?token=$APIFY_TOKEN&format=json" \
   -H "Content-Type: application/json" \
-  -d "{\"urls\": [\"YOUTUBE_URL\"]}"
+  -d "{\"videoUrl\": \"YOUTUBE_URL\"}"
 ```
 
 Replace `YOUTUBE_URL` with the actual URL. The response is a JSON array; each element may contain fields such as `transcript`, `text`, `captions`, or `subtitles` depending on the actor version.
