@@ -1,78 +1,183 @@
 ---
 name: youtube-transcript
-description: Extracts the full transcript from a YouTube video using the Apify actor faVsWy9VTSNVIhWpR and saves it to a .md file. Invoke when the user provides a YouTube URL and wants the transcript saved locally.
+description: Extracts the full transcript from a YouTube video using the Apify actor faVsWy9VTSNVIhWpR, saves it to a .md file, commits it to git, then produces a structured summary with key takeaways and direct quotes. Invoke when the user provides a YouTube URL.
 ---
 
-# YouTube Transcript Extractor
+# YouTube Transcript Extractor + Summariser
 
 ## Overview
-Fetch the transcript of any YouTube video via the Apify actor `faVsWy9VTSNVIhWpR` and write it to a clean Markdown file.
+Given any YouTube URL, this skill:
+1. Calls the Apify actor `faVsWy9VTSNVIhWpR` to fetch the raw transcript
+2. Parses the response into clean paragraphs and saves a `.md` file
+3. Commits and pushes the file to git
+4. Reads the transcript and produces a structured summary with key takeaways
 
 ## Prerequisites
 `APIFY_TOKEN` must be set in the environment. If it is not set, stop and tell the user:
-> "APIFY_TOKEN is not set. See the setup instructions below."
-Then show the setup instructions from the **Token Setup** section.
+> "APIFY_TOKEN is not set. See the Token Setup section below."
+
+---
 
 ## Execution Steps
 
-### 1. Validate input
-- Extract the YouTube URL from the user's message.
-- Accept any of these formats:
-  - `https://www.youtube.com/watch?v=VIDEO_ID`
-  - `https://youtu.be/VIDEO_ID`
-  - `https://www.youtube.com/shorts/VIDEO_ID`
-- Derive a safe filename slug from the URL (use the video ID, e.g. `dQw4w9WgXcQ`).
+### Step 1 — Extract the video ID
 
-### 2. Check for the token
-Run:
+Accept any of these URL formats:
+- `https://www.youtube.com/watch?v=VIDEO_ID`
+- `https://www.youtube.com/watch?v=VIDEO_ID&si=...` (strip query params after `v=`)
+- `https://youtu.be/VIDEO_ID`
+- `https://youtu.be/VIDEO_ID?si=...` (strip `?si=...`)
+- `https://www.youtube.com/shorts/VIDEO_ID`
+
+The video ID is the 11-character alphanumeric string. Use it as `VIDEO_ID` throughout.
+
+### Step 2 — Check the token
+
 ```bash
-echo "${APIFY_TOKEN:0:4}..."
+echo "${APIFY_TOKEN:0:8}..."
 ```
-If the variable is empty or unset, halt and show the Token Setup section.
 
-### 3. Call the Apify actor (synchronous run)
-Use a single `curl` command that runs the actor and waits for the result:
+If empty or unset, halt and show the **Token Setup** section.
+
+### Step 3 — Call the Apify actor and save raw JSON
+
+Run the following, replacing `VIDEO_ID` and `YOUTUBE_URL`:
 
 ```bash
 curl -s -X POST \
   "https://api.apify.com/v2/acts/faVsWy9VTSNVIhWpR/run-sync-get-dataset-items?token=$APIFY_TOKEN&format=json" \
   -H "Content-Type: application/json" \
-  -d "{\"videoUrl\": \"YOUTUBE_URL\"}"
+  -d '{"videoUrl": "YOUTUBE_URL"}' \
+  --max-time 120 \
+  -o /tmp/transcript-VIDEO_ID-raw.json
 ```
 
-Replace `YOUTUBE_URL` with the actual URL. The response is a JSON array; each element may contain fields such as `transcript`, `text`, `captions`, or `subtitles` depending on the actor version.
+**Important:** The input field is `videoUrl` (not `urls`, not `url`). Use the canonical `https://www.youtube.com/watch?v=VIDEO_ID` form as the value even if the user supplied a `youtu.be` short link.
 
-### 4. Parse the response
-Inspect the JSON response:
-- If the HTTP status is not 200 or the body contains `"error"`, report the error message to the user and stop.
-- If the array is empty, tell the user the video may have no captions available and stop.
-- Extract the transcript text from the first result object. Try these field names in order until one is non-empty:
-  1. `transcript`
-  2. `text`
-  3. `captions`
-  4. `subtitles`
+Check the response:
+```bash
+head -c 200 /tmp/transcript-VIDEO_ID-raw.json
+```
 
-### 5. Write the Markdown file
-Save the transcript to a file named `transcript-VIDEO_ID.md` in the current working directory.
+If it contains `"error"` or is empty, report the error and stop.
 
-File structure:
-```markdown
-# Transcript: [YouTube URL]
+### Step 4 — Parse and write the Markdown file
 
-> Extracted on [ISO date] via Apify actor faVsWy9VTSNVIhWpR
+Run this Python script (replacing `VIDEO_ID` in the two string literals):
+
+```python
+import json, datetime, re
+
+with open("/tmp/transcript-VIDEO_ID-raw.json") as f:
+    data = json.load(f)
+
+segments = data[0]["data"]
+
+lines = []
+for seg in segments:
+    t = seg["text"].strip()
+    t = re.sub(r'\[.*?\]', '', t).strip()   # strip [music], [applause], etc.
+    if t:
+        lines.append(t)
+
+full_text = " ".join(lines)
+
+# Chunk into ~600-char paragraphs on sentence boundaries
+sentences = re.split(r'(?<=[.!?])\s+', full_text)
+paragraphs, chunk = [], []
+for s in sentences:
+    chunk.append(s)
+    if len(" ".join(chunk)) > 600:
+        paragraphs.append(" ".join(chunk))
+        chunk = []
+if chunk:
+    paragraphs.append(" ".join(chunk))
+
+body = "\n\n".join(paragraphs)
+today = datetime.date.today().isoformat()
+
+md = f"""# Transcript: https://www.youtube.com/watch?v=VIDEO_ID
+
+> Extracted on {today} via Apify actor faVsWy9VTSNVIhWpR
 
 ---
 
-[full transcript text, preserving paragraph breaks]
+{body}
+"""
+
+out = "/home/user/taste-skill/transcript-VIDEO_ID.md"
+with open(out, "w") as f:
+    f.write(md)
+
+print(f"Written: {out}")
+print(f"Segments: {len(segments)}, Paragraphs: {len(paragraphs)}, Chars: {len(body)}")
 ```
 
-Use the `Write` tool to create the file.
+Use the `Bash` tool to run this as `python3 -c "..."` or write it to a temp file and execute it.
 
-### 6. Confirm to the user
-Tell the user:
-- The filename that was created.
-- How many characters / approximate word count are in the transcript.
-- Any warnings (e.g. transcript was auto-generated, no timestamps, etc.) if the API response contains that information.
+### Step 5 — Commit and push
+
+```bash
+cd /home/user/taste-skill
+git add transcript-VIDEO_ID.md
+git commit -m "$(cat <<'EOF'
+feat: add transcript for VIDEO_ID
+
+https://claude.ai/code/session_019WsQjiQuMYD2jXfmiygHfB
+EOF
+)"
+git push -u origin claude/youtube-transcript-extractor-ngjP7
+```
+
+### Step 6 — Read the transcript
+
+Use the `Read` tool on `/home/user/taste-skill/transcript-VIDEO_ID.md`.
+
+If the file is longer than 2000 lines, read it in chunks:
+- First call: `limit: 2000` (no offset)
+- Subsequent calls: `offset: 2000`, `limit: 2000`, etc.
+Continue until you have read the full file.
+
+### Step 7 — Produce the structured summary
+
+Output the summary in this exact format:
+
+---
+
+**Speaker / Creator**
+Name and context (channel name, credentials, what they do).
+
+**Video context**
+One sentence: what the video is about and why it matters.
+
+**Key numbers / metrics**
+Bullet list of any concrete figures mentioned (revenue, time, token counts, percentages, prices, etc.).
+
+**Key takeaways**
+
+1. **Takeaway title** — explanation in 2–3 sentences.
+   > "Direct quote from the transcript that supports this point."
+
+2. **Takeaway title** — explanation in 2–3 sentences.
+   > "Direct quote."
+
+*(Continue for all major points — typically 5–10 takeaways.)*
+
+**Tools / tech mentioned** *(only if relevant)*
+
+| Tool | What it does in this context |
+|---|---|
+| Tool name | Brief description |
+
+---
+
+Guidelines for the summary:
+- Identify the speaker by name if mentioned; otherwise use the channel name or "the presenter".
+- Pull at least one direct quote per takeaway — use the exact words from the transcript.
+- Capture concrete metrics, prices, time savings, and benchmarks — these are the most re-usable facts.
+- If the video covers a step-by-step process, number the steps and preserve the order.
+- Keep each takeaway self-contained so it can be read without the others.
+- If the video is a product demo or tutorial, include a "How it works" section before the takeaways.
 
 ---
 
@@ -80,9 +185,9 @@ Tell the user:
 
 ### How to add your Apify token to Claude Code
 
-**Option A — Persistent (recommended): add it to Claude Code settings**
+**Recommended — add it to Claude Code settings permanently**
 
-Run the `/update-config` skill and ask it to add `APIFY_TOKEN` to your environment. Alternatively, edit `~/.claude/settings.json` manually and add:
+Edit `~/.claude/settings.json` and add:
 
 ```json
 {
@@ -92,19 +197,18 @@ Run the `/update-config` skill and ask it to add `APIFY_TOKEN` to your environme
 }
 ```
 
-After saving, restart Claude Code for the variable to take effect.
+Restart Claude Code after saving. Never commit this file to git.
 
-**Option B — Session only: export in your shell before launching Claude Code**
+**Session-only alternative**
 
 ```bash
 export APIFY_TOKEN="apify_api_XXXXXXXXXXXXXXXXXXXX"
-claude  # or however you launch Claude Code
 ```
 
-**Where to find your token:**
-1. Go to [console.apify.com](https://console.apify.com)
-2. Click your avatar → **Settings** → **Integrations**
-3. Copy the value under **Personal API token** (starts with `apify_api_`)
+**Where to find your token**
+1. Go to console.apify.com
+2. Click your avatar → Settings → Integrations
+3. Copy the Personal API token (starts with `apify_api_`)
 
 ---
 
@@ -112,7 +216,10 @@ claude  # or however you launch Claude Code
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
+| `"Field input.videoUrl is required"` | Wrong input field name | Use `videoUrl`, not `urls` or `url` |
 | `401 Unauthorized` | Token is wrong or expired | Regenerate token at console.apify.com |
-| `404 Not Found` | Actor ID is wrong | Confirm actor ID is `faVsWy9VTSNVIhWpR` |
-| Empty dataset returned | Video has no captions | Try a video with CC / auto-captions enabled |
-| `timeout` | Actor took > 120 s | Re-run; Apify may be under load |
+| `404 Not Found` | Actor ID typo | Confirm actor ID is `faVsWy9VTSNVIhWpR` |
+| Empty dataset `[]` | Video has no captions | Try a video with CC or auto-captions |
+| `curl: (28) timeout` | Actor took > 120 s | Re-run; Apify may be under load |
+| `KeyError: 'data'` in Python | Unexpected response shape | `print(data[0].keys())` to inspect fields |
+| File > 2000 lines | Large transcript | Read in chunks with `offset` and `limit` |
